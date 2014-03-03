@@ -1,4 +1,3 @@
-
 class TorrentClient
   attr_reader :stream, :peer_id, :new_stash, :peer_hash, :uri
 
@@ -17,7 +16,7 @@ class TorrentClient
   end
 
   def piece_length
-    stream['info']['piece length'].to_s
+    stream['info']['piece length']
   end
 
   def sha
@@ -35,8 +34,16 @@ class TorrentClient
     }
   end
 
+  def file_data
+    { total: total, file_sizes: file_sizes, piece_size: piece_length }
+  end
+
   def file_sizes
-    peer_hash[:pieces].map { |file| file[:length] }
+    stream['info']['files'].map { |file| file['length'].to_i }
+  end
+
+  def total
+    file_sizes.inject { |x, y| x + y }
   end
 
   def create_files
@@ -58,8 +65,10 @@ class TorrentClient
       end
     end
 
+    ip_list.map! { |e| { :ip => e[0..3].join('.'), :port => (e[4] * 256) + e[5] } }
+
     # ip key contains the ip address, port the port number.
 
-    return ip_list.map { |e| { :ip => e[0..3].join('.'), :port => (e[4] * 256) + e[5] } }, peer_hash
+    return ip_list, peer_hash
   end
 end

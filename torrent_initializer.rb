@@ -15,30 +15,34 @@ binding.pry
 # from the torrent file, the file list is generated and applied to the current
 # directory by creating empty files.
 
-# peer.create_files
-#
-#
 live_streams = []
 
 streams, peer_hash = peer.begin
-first = streams[0..3]
-second = streams[4..(streams.size-1)]
-[first, second].each do |streams|
-  streams.each do |stream|
-    begin
-      p 'connected!'
-      socket = TCPSocket.new(stream[:ip], stream[:port])
+
+streams.each do |stream|
+  begin
+    pieces = peer.file_data
+    socket =  begin
+                Timeout::timeout(5) { TCPSocket.new(stream[:ip], stream[:port]) }
+              rescue Timeout::Error
+                false
+              end
+
+    if socket
+      p 'Connected...'
       socket.write("\x13BitTorrent protocol\x00\x00\x00\x00\x00\x00\x00\x00#{peer_hash[:info_hash]}#{peer_hash[:peer_id]}")
-      peer = PeerList.new(socket)
-      binding.pry
-      peer.parse_response
-      # end
-    rescue Errno::ECONNREFUSED => e
-      p 'nah'
-    rescue Timeout::Error
-      p 'timeout'
-    rescue Errno::EADDRNOTAVAIL
-      p 'not avail'
+
+      handshake = socket.read(68)
+
+      if !handshake.nil?
+        peer_connect = PeerList.new(socket, handshake, pieces, peer_hash)
+        binding.pry
+        peer_connect.parse_response
+      end
     end
+  rescue Errno::ECONNREFUSED => e
+    p 'nah'
+  rescue Errno::EADDRNOTAVAIL
+    p 'not avail'
   end
 end
