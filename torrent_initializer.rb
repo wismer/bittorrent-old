@@ -10,7 +10,6 @@ require_relative 'torrent.rb'
 
 stream = BEncode.load_file('sky.torrent')
 peer   = TorrentClient.new(stream)
-binding.pry
 
 # from the torrent file, the file list is generated and applied to the current
 # directory by creating empty files.
@@ -18,8 +17,9 @@ binding.pry
 live_streams = []
 
 streams, peer_hash = peer.begin
+sha_list           = peer.sha_list
 
-streams.each do |stream|
+streams.shuffle.each do |stream|
   begin
     pieces = peer.file_data
     socket =  begin
@@ -35,8 +35,7 @@ streams.each do |stream|
       handshake = socket.read(68)
 
       if !handshake.nil?
-        peer_connect = PeerList.new(socket, handshake, pieces, peer_hash)
-        binding.pry
+        peer_connect = PeerList.new(socket, handshake, pieces, peer_hash, sha_list)
         peer_connect.parse_response
       end
     end

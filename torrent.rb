@@ -1,12 +1,12 @@
 
 
 class PeerList
-  attr_reader :socket, :packet_index, :pieces, :peer_hash
+  attr_reader :socket, :packet_index, :pieces, :peer_hash, :block_count, :sha_list
   attr_accessor :handshake
 
   BLOCK = 2**14
 
-  def initialize(socket, handshake, pieces, peer_hash)
+  def initialize(socket, handshake, pieces={}, peer_hash, sha_list)
     @socket     = socket
     @handshake  = {
                     :pstrlen   => handshake.slice!(0).unpack("C")[0],
@@ -15,8 +15,10 @@ class PeerList
                     :info_hash => handshake.slice!(0..19),
                     :peer_id   => handshake.slice!(0..19)
                   }
-    @pieces    = pieces
-    @peer_hash = peer_hash
+    @block_count = pieces[:piece_size] / BLOCK
+    @peer_hash   = peer_hash
+    @sha_list    = sha_list
+    @data_file   = File.open('data', 'a+')
   end
 
   # TODO add exception in case of nil being returned from host
@@ -41,7 +43,7 @@ class PeerList
       puts "#{id} #{len}"
       process_have_msg(data)
       send_unchoke
-      request_packet(0, 0) if interested?
+      request_packet if interested?
     end
 
 
@@ -101,100 +103,43 @@ class PeerList
   def show_interest
     socket.write("\x00\x00\x00\x01\x02")
 
-
     if interested?
-      request_packet(0, 0)
+      request_packet
     else
       raise 'not interested in me, apparently. What a jerkface.'
     end
   end
 
-  def request_packet(offset, index, off=0, size=0)
-    # TODO
-    # TODO
-    # TODO 1.) Cut up the pieces into parts of strings of 20 length. Whenever a piece is finished, trigger a SHA1
-    # TODO     HASH check on the downloaded data. If they match, continue on and ratchet up the array of hashes.
-    # TODO 2.) A seperate class should be created for downloading of individual pieces so as to better keep track
-    # TODO     of the download progression.
-    # TODO
-    # TODO
-
-
-    # checks to see if the peer has the piece necessary. If it doesn't, moves on to the next spot and repeats.
-    if !@packet_index[index]
-      request_packet(offset, index+=1, size)
-    else
-      # response <len>13<id>6 index begin length (usually 2**14)
-      # proper length, proper ID, maybe the right index, offset needs to be incremented, length is fine
-
-      off += BLOCK
-
-      len = pack_request(13) + "\x06" + pack_request(index) + pack_request(off) + pack_request(BLOCK)
-
-      socket.write(len)
-      response = socket.read(4)
-
-      if response == "\x00\x00\x00\x00"
+  def request_packet(index=0)
+    index += 1 if !@packet_index[index]
+    until index == (@packet_index.count(true) - 1)
+      piece = ''
+      0.upto(block_count - 1) do |t|
+        req_msg = pack_request(13) + "\x06" + pack_request(index) + pack_request(t * BLOCK) + pack_request(BLOCK)
+        socket.write(req_msg)
         socket.read(13)
-      else
-        socket.read(9)
+        piece << socket.read(BLOCK)
+        puts "num: #{t} of index: #{index}  block downloaded..."
       end
-      #
-
-      # until the entire piece has been downloaded, loop through the download request/receive_piece process
-      # until piece.complete?
-      #
-      #  piece.download_packet
-      #
-
-
-
-
-
-      data    = socket.read(BLOCK)
-      # approaching the end of the piece, data unfortunately becomes nil. Either I am exceeding the normal size
-      # of a piece, or nil is being returned
-      # binding.pry if data.nil?
-
-
-
-      if data.nil?
-        index += 1
-        off    = 0
-      else
-        size += data.size
-        insert_data(data) if hash_verified?(data)
-      end
-      puts "#{size} bytes downloaded --- remaining: #{pieces[:piece_size] - size}..."
-      request_packet(offset, index, off, size) if index < @packet_index.size
+      distribute_to_file(piece, index)
+      index += 1
     end
+    peer_hash.each do |file|
+      create_file(file)
+    end
+    @file_data.close
   end
 
-  def hash_verified?(data)
-    # Digest::SHA1.digest(data) == piece_hash
-    true
+  def distribute_to_file(piece, index)
+    @file_data << data if hash_verified?(piece, index)
   end
 
-  def insert_data(data)
-    File.open('data', 'a+') { |io| io << data }
+  def hash_verified?(piece, index)
+    Digest::SHA1.digest(piece) == sha_list[index]
   end
 
   def pack_request(i)
     [i].pack("I>")
-  end
-end
-
-class Piece < PeerList
-  attr_reader :files, :socket, :offset
-  def initialize(socket, file_data)
-    @socket = socket
-    @init   = socket.read(8)
-  end
-
-  def download_data
-    p "Downloading
-    et: #{offset}"
-    File.open('data', 'a') { |f| f << socket.read(offset) }
   end
 end
 

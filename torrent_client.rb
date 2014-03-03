@@ -71,4 +71,15 @@ class TorrentClient
 
     return ip_list, peer_hash
   end
+
+  def sha_list
+    n, e = 0, 20
+    list = []
+    until stream['info']['pieces'].bytesize < e
+      list << stream['info']['pieces'].byteslice(n...e)
+      n += 20
+      e += 20
+    end
+    list
+  end
 end
