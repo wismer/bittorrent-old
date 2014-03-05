@@ -9,10 +9,10 @@ class TorrentClient
 
   # url gets reformatted to include query parameters
 
-  def begin
+  def raw_peers
     uri.query = URI.encode_www_form(peer_hash)
     data      = BEncode.load(Net::HTTP.get(uri))
-    peer_list(data['peers'].bytes)
+    data['peers'].bytes
   end
 
   def piece_length
@@ -52,24 +52,11 @@ class TorrentClient
 
   # Using the peers key of the torrent file, the hex-encoded data gets reinterpreted as ips addresses.
 
-  def peer_list(peers)
-    inc     = 0
+  def peer_list
     ip_list = []
-    while inc < peers.size
-      ip = peers[inc...inc+=6]
-
-      if ip.size == 6
-        ip_list << ip
-      else
-        raise 'too big'
-      end
-    end
+    raw_peers.each_slice(6) { |e| ip_list << e if e.length == 6 }
 
     ip_list.map! { |e| { :ip => e[0..3].join('.'), :port => (e[4] * 256) + e[5] } }
-
-    # ip key contains the ip address, port the port number.
-
-    return ip_list, peer_hash
   end
 
   def sha_list
@@ -81,5 +68,17 @@ class TorrentClient
       e += 20
     end
     list
+  end
+end
+
+class FileType
+  def initialize(type={})
+    @path = type['path']
+    @size = type['length']
+  end
+
+  def to_file
+    FileUtils.mkdir_p(@path[0..(@path.size - 2)]) if @path.size > 1
+    FileUtils.touch(File.join(@path))
   end
 end

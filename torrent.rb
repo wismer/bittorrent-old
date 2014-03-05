@@ -1,52 +1,35 @@
 
 
-class PeerList
-  attr_reader :socket, :packet_index, :pieces, :peer_hash, :block_count, :sha_list
-  attr_accessor :handshake
-
+class Peer
+  # for non outside vars use the @ and remove them from
   BLOCK = 2**14
 
-  def initialize(socket, handshake, pieces={}, peer_hash, sha_list)
-    @socket     = socket
-    @handshake  = {
-                    :pstrlen   => handshake.slice!(0).unpack("C")[0],
-                    :pstr      => handshake.slice!(0..18),
-                    :reserved  => handshake.slice!(0..7),
-                    :info_hash => handshake.slice!(0..19),
-                    :peer_id   => handshake.slice!(0..19)
-                  }
+  def initialize(socket, file_data, piece_index, pieces={})
+    @socket      = socket
     @block_count = pieces[:piece_size] / BLOCK
-    @peer_hash   = peer_hash
-    @sha_list    = sha_list
+    @file_data   = file_data
+    @piece_index = piece_index
+    # close the File stream within the class
     @data_file   = File.open('data', 'a+')
   end
 
-  # TODO add exception in case of nil being returned from host
-
   def parse_response
-    p 'parsing response...'
+    puts 'parsing response...'
 
     # After handshake message is sent and the sha digest interpreted, the next round of transmission comes in
     # if the id is 5, then a bitfield process occurs
 
-    len = begin
-            Timeout::timeout(5) { socket.read(4).unpack("N")[0] }
-          rescue Timeout::Error
-            false
-          end
-
-    id  = socket.read(1).ord if len
+    len = msg(4)
+    id  = msg(1).ord if len
 
     if id == 5
-      process_bitfield_msg(len)
+      process_bitfield_msg(len.unpack("N")[0])
     else
-      puts "#{id} #{len}"
+      puts "#{id} #{len.unpack("N")[0]}"
       process_have_msg(data)
       send_unchoke
       request_packet if interested?
     end
-
-
   end
 
   def send_unchoke
@@ -54,22 +37,19 @@ class PeerList
   end
 
   def interested?
-    socket.read(5) == "\x00\x00\x00\x01\x01"
+    msg(5) == "\x00\x00\x00\x01\x01"
   end
 
   def process_bitfield_msg(len)
-    p 'processing bitfield'
-    bitfield      = socket.read(len - 1)
+    puts 'processing bitfield...'
+    bitfield      = msg(len - 1)
+    binding.pry
     @packet_index = bitfield.unpack("B*").join.split('').map { |e| e == '1' } # => array of 1's and 0's - 1 being piece is in poss, 0 not
 
     # if there's data past the bitfield, it is likely the have msg's coming through in a bulk size.
     # so the first 9 bytes are measured
 
-    data =  begin
-              Timeout::timeout(5) { socket.read(9) } # <= this sometimes creates an EOF break. Check the IO library for workarounds
-            rescue Timeout::Error
-              false
-            end
+    data = msg(9)
 
     # if the bytes indicate a have msg, then it loops recursively through until there are no more bytes to retrieve
     # otherwise, the interested msg is sent to the host. Once the host responds positively, the initial request for files is sentt
@@ -83,7 +63,6 @@ class PeerList
 
   def process_have_msg(data) # <= possible nil errors will occur with have_data
     @packet_index[data.unpack("C*").last] = true
-    p data
     data = msg(9)
     if data
       process_have_msg(data)
@@ -110,6 +89,19 @@ class PeerList
     end
   end
 
+  def message(n)
+    begin
+      socket.read_nonblock(n)
+    rescue IO::EAGAINWaitReadable
+      false
+    end
+  end
+
+  def request_block(index=0)
+  end
+
+  # num.times <block> == n.upto(n-1)
+  # or use a range.each
   def request_packet(index=0)
     index += 1 if !@packet_index[index]
     until index == (@packet_index.count(true) - 1)
@@ -117,21 +109,36 @@ class PeerList
       0.upto(block_count - 1) do |t|
         req_msg = pack_request(13) + "\x06" + pack_request(index) + pack_request(t * BLOCK) + pack_request(BLOCK)
         socket.write(req_msg)
-        socket.read(13)
+
+        msg(13)
         piece << socket.read(BLOCK)
-        puts "num: #{t} of index: #{index}  block downloaded..."
+        puts "num: #{t+1} of index: #{index}  block downloaded..."
       end
       distribute_to_file(piece, index)
       index += 1
     end
-    peer_hash.each do |file|
-      create_file(file)
-    end
-    @file_data.close
+  end
+
+  def keep_alive
+    socket.write("\x00\x00\x00\x00")
+  end
+
+  # also use fileutils for this
+
+  def extract_file_bytes(file)
+    open_file = if file[:folder].empty?
+                  File.open("#{file[:filename]}", "a")
+                else
+                  Dir.mkdir("#{file[:folder]}") if !Dir.exists?("#{file[:folder]}")
+                  File.open("#{file[:folder]}/#{file[:filename]}", 'a')
+                end
+
+    open_file << @file_data.read(file.size)
+    open_file.close
   end
 
   def distribute_to_file(piece, index)
-    @file_data << data if hash_verified?(piece, index)
+    @data_file << data if hash_verified?(piece, index)
   end
 
   def hash_verified?(piece, index)
