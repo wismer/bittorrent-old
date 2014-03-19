@@ -131,7 +131,7 @@ class TorrentInitializer
   end
 
   def set_priorities
-    tally = [0,0,0,0]
+    tally = Array.new(@connections.size) { 0 }
     map_priorities.each_with_index do |e, i|
       # e is the array of elements that show the corresponding index of @connections that point to the peer that has that piece.
       if e.size == 1
