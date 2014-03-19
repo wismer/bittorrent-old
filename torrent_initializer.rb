@@ -14,7 +14,10 @@ class TorrentInitializer
     @connections = []
     @peer_info   = TorrentClient.new(stream)
     @files       = stream['info']['files'].map { |file| FileType.new(file).to_file }
-    binding.pry
+  end
+
+  def sha_list
+    @peer.sha_list
   end
 
   def peers
@@ -29,18 +32,22 @@ class TorrentInitializer
     @peer_info.file_data
   end
 
+  def sha_list
+    @peer_info.sha_list
+  end
+
   def file_index
     Array.new(@peer_info.sha_list.size) { false }
   end
 
   def connect_peers
-    peers.each { |peer| make_connection(peer) { |p| @connections << Peer.new(@socket, file_data, file_index, peer_hash) } }
+    peers.each { |peer| make_connection(peer) { |p| @connections << Peer.new(@socket, file_index, peer, sha_list, file_data) } }
   end
 
   def make_connection(peer)
     puts "\nConnecting to IP: #{peer[:ip]} PORT: #{peer[:port]}"
     @socket = begin
-                Timeout::timeout(5) { TCPSocket.new(peer[:ip], peer[:port]) }
+                Timeout::timeout(2) { TCPSocket.new(peer[:ip], peer[:port]) }
               rescue Timeout::Error
                 puts "Timed out."
                 false
@@ -50,13 +57,19 @@ class TorrentInitializer
               rescue Errno::ECONNREFUSED
                 puts "Connection refused."
                 false
+              rescue Errno::ECONNRESET
+                puts "bastards."
+                false
               end
 
     if @socket
       handshake_res = send_handshake
       if handshake_res
-        print '....OK! '
+        print "....OK! \n"
         yield handshake_res
+      else
+        print 'no response... closing. '
+        @socket.close
       end
     end
   end
@@ -64,9 +77,8 @@ class TorrentInitializer
 
 
   private def send_handshake
-    print 'Sending handshake...'
+    print "Sending handshake..."
     @socket.write("\x13BitTorrent protocol\x00\x00\x00\x00\x00\x00\x00\x00#{peer_hash[:info_hash]}#{peer_hash[:peer_id]}")
-    binding.pry
     msg(68)
   end
 
@@ -75,11 +87,81 @@ class TorrentInitializer
       Timeout::timeout(5) { @socket.read(n) }
     rescue Timeout::Error
       false
+    rescue Errno::ECONNRESET
+      false 
     end
   end
 
   def active_connections
     connections.select { |connection| connection.interested? }
+  end
+
+  def pick_piece
+  end
+
+  def start!
+    # all the active connections that have gone through the entire process up to the requesting of packages
+    # size  = file_index.size / inventory.size
+    # start = 0
+    @connections.each do |conn| 
+      conn.parse_response
+    #   conn.piece_index    = conn.piece_index.map.with_index { |x, i| i }[start..(start+=size)]
+      # conn.request_packet
+    end
+    set_priorities
+    @connections.each { |conn| conn.request_packet }
+    
+    threads = @connections.map { |x| Thread.new { x.download_queue } }
+    threads.each { |x| x.join }
+    @connections.each { |x| x.data_file.close }
+  end
+
+  def inventory
+    @connections.map { |x| x.piece_index }
+  end
+
+  def map_priorities
+    index = file_index.map.with_index do |piece, i|
+              arr = []
+              @connections.each_with_index { |x, y| arr << y if x.piece_index[i] }
+              arr
+            end
+    @connections.each { |conn| conn.piece_index.map! { false } }
+    return index
+  end
+
+  def set_priorities
+    tally = [0,0,0,0]
+    map_priorities.each_with_index do |e, i|
+      # e is the array of elements that show the corresponding index of @connections that point to the peer that has that piece.
+      if e.size == 1
+        tally[e[0]] += 1
+        @connections[e[0]].piece_index[i] = true
+      elsif e.size > 1
+        min = tally.min
+        ind = tally.find_index(min)
+        tally[ind] += 1
+        @connections[e[ind]].piece_index[i] = true
+      else
+        puts 'packet is missing'
+      end
+    end
+  end
+
+  def send(msg, peer, step)
+    begin
+      socket.write_nonblock(msg)
+    rescue IO::EAGAINWaitWritable
+      [msg, peer, step]
+    end
+  end
+
+  def recv(msg)
+    begin
+      socket.recv_nonblock(msg)
+    rescue IO::EAGAINWaitReadable
+      false
+    end
   end
 end
 
@@ -90,66 +172,23 @@ end
 file    = 'sky.torrent'
 stream  = BEncode.load_file(file)
 peer    = TorrentInitializer.new(stream)
-binding.pry
 peer.connect_peers
-peer.connections.each { |conn| conn.parse_response }
-connections = peer.active_connections
-
-def connect!(conn)
-  socket = conn.socket
-  socket.read_nonblock(BLOCK)
-end
-connections.each do |conn|
-
-end
-
-# until step == connections.size
+peer.start!
 
 
-connections.each { |conn| conn.packet_index[i] = false }
+# [15] pry(main)> main_array.map.with_index do |a,i|
+# [15] pry(main)*   sub = []  
+# [15] pry(main)*   [arr_one[i], arr_two[i], arr_three[i]].each_with_index { |x,y|   
+# [15] pry(main)*     sub << y if x    
+# [15] pry(main)*   }  
+# [15] pry(main)*   sub
+# [15] pry(main)* end 
 
-
-# index is the starting point... So the file_index needs to be parceled out.
-
-
-
-
-
-
-
-
-live_streams = []
-
-# streams, peer_hash = peer.raw_peers
-# sha_list           = peer.sha_list
-binding.pry
-streams.shuffle.each do |stream|
-  begin
-    pieces = peer.file_data
-    socket =  begin
-                Timeout::timeout(5) { TCPSocket.new(stream[:ip], stream[:port]) }
-              rescue Timeout::Error
-                false
-              end
-
-    if socket
-      p 'Connected...'
-      socket.write("\x13BitTorrent protocol\x00\x00\x00\x00\x00\x00\x00\x00#{peer_hash[:info_hash]}#{peer_hash[:peer_id]}")
-
-      handshake = socket.read(68)
-
-      if !handshake.nil?
-        live_streams << PeerList.new(socket, pieces, peer_hash, sha_list)
-        binding.pry
-
-        peer_connect.parse_response
-        files.each { |file| peer_connect.extract_file_bytes(file) }
-        peer_connect.file_data.close
-      end
-    end
-  rescue Errno::ECONNREFUSED => e
-    p 'nah'
-  rescue Errno::EADDRNOTAVAIL
-    p 'not avail'
-  end
-end
+# array.each_with_index do |x, i|
+#   case x.size
+#   when 1 
+#     tally[x[0]] += 1
+#     peers_array[x.join].piece_index[i] = true
+#   when 2
+#     ind = tally.find_lowest_with_index # => index
+#     peers_array
